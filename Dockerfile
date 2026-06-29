@@ -1,9 +1,13 @@
 FROM python:3.11-slim
 
-# System deps: Tesseract OCR + poppler (for pdf2image)
+# System deps: Tesseract OCR + poppler (pdf2image) + LibreOffice (Office→PDF)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     poppler-utils \
+    libreoffice-writer \
+    libreoffice-calc \
+    libreoffice-impress \
+    fonts-dejavu \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

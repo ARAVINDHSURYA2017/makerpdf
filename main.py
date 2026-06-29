@@ -1,7 +1,7 @@
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-import io, os, tempfile, zipfile, shutil
+import io, os, tempfile, zipfile, shutil, subprocess
 
 import fitz  # PyMuPDF
 from pdf2docx import Converter
@@ -51,6 +51,47 @@ async def pdf_to_word(file: UploadFile = File(...)):
         for p in (pdf_path, docx_path):
             if os.path.exists(p):
                 os.remove(p)
+
+
+# ── Office to PDF (Word / Excel / PowerPoint) via LibreOffice ─────────────────
+@app.post("/convert/office-to-pdf")
+async def office_to_pdf(file: UploadFile = File(...)):
+    data = await file.read()
+    workdir = tempfile.mkdtemp()
+    try:
+        # keep the original extension so LibreOffice picks the right filter
+        safe_name = os.path.basename(file.filename) or "input"
+        in_path = os.path.join(workdir, safe_name)
+        with open(in_path, "wb") as f:
+            f.write(data)
+
+        # LibreOffice needs a writable HOME for its user profile
+        env = dict(os.environ, HOME=workdir)
+        try:
+            subprocess.run(
+                ["soffice", "--headless", "--norestore", "--convert-to", "pdf",
+                 "--outdir", workdir, in_path],
+                check=True, timeout=120, env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+        except subprocess.TimeoutExpired:
+            raise HTTPException(status_code=504, detail="Conversion timed out. Try a smaller file.")
+        except subprocess.CalledProcessError as e:
+            raise HTTPException(status_code=500, detail="Could not convert this file: " + e.stderr.decode("utf-8", "ignore")[:200])
+
+        base = os.path.splitext(safe_name)[0]
+        out_path = os.path.join(workdir, base + ".pdf")
+        if not os.path.exists(out_path):
+            raise HTTPException(status_code=500, detail="Conversion produced no output. Is the file a valid Office document?")
+        with open(out_path, "rb") as f:
+            content = f.read()
+        return StreamingResponse(
+            io.BytesIO(content),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{base}.pdf"'},
+        )
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 # ── PDF to JPG (all pages as zip) ─────────────────────────────────────────────
