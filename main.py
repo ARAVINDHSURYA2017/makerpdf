@@ -65,24 +65,35 @@ async def office_to_pdf(file: UploadFile = File(...)):
         with open(in_path, "wb") as f:
             f.write(data)
 
-        # LibreOffice needs a writable HOME for its user profile
+        # LibreOffice needs a writable HOME and a dedicated user-profile dir,
+        # otherwise it can exit 0 without producing any output.
+        profile = os.path.join(workdir, "lo_profile")
         env = dict(os.environ, HOME=workdir)
         try:
-            subprocess.run(
-                ["soffice", "--headless", "--norestore", "--convert-to", "pdf",
+            proc = subprocess.run(
+                ["soffice",
+                 "-env:UserInstallation=file://" + profile.replace(os.sep, "/"),
+                 "--headless", "--nologo", "--norestore", "--nofirststartwizard",
+                 "--convert-to", "pdf:writer_pdf_Export" if safe_name.lower().endswith((".doc", ".docx")) else "pdf",
                  "--outdir", workdir, in_path],
-                check=True, timeout=120, env=env,
+                timeout=120, env=env,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
         except subprocess.TimeoutExpired:
             raise HTTPException(status_code=504, detail="Conversion timed out. Try a smaller file.")
-        except subprocess.CalledProcessError as e:
-            raise HTTPException(status_code=500, detail="Could not convert this file: " + e.stderr.decode("utf-8", "ignore")[:200])
 
         base = os.path.splitext(safe_name)[0]
         out_path = os.path.join(workdir, base + ".pdf")
         if not os.path.exists(out_path):
-            raise HTTPException(status_code=500, detail="Conversion produced no output. Is the file a valid Office document?")
+            detail = (
+                "Conversion produced no output. "
+                "exit=%s stdout=%s stderr=%s files=%s"
+                % (proc.returncode,
+                   proc.stdout.decode("utf-8", "ignore")[:300],
+                   proc.stderr.decode("utf-8", "ignore")[:300],
+                   os.listdir(workdir))
+            )
+            raise HTTPException(status_code=500, detail=detail)
         with open(out_path, "rb") as f:
             content = f.read()
         return StreamingResponse(
